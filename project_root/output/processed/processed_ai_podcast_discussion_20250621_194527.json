@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "title": "AI Podcast Discussion",
+    "timestamp": "20250621_194227",
+    "prompt_length": 903,
+    "processing_timestamp": "20250621_194527",
+    "model": "openai/gpt-3.5-turbo",
+    "provider": "OpenAI"
+  },
+  "analysis": [
+    {
+      "original_text": "Artificial intelligence is transforming industries. In healthcare, AI can analyze medical images faster than humans. Machine learning, a subset of AI, enables systems to learn from data. Deep learning uses neural networks with multiple layers. The future of AI includes more personalized medicine and autonomous vehicles.",
+      "highlight_text": "AI transforming industries. In healthcare, AI analyzes medical images faster than humans. Future includes more personalized medicine and autonomous vehicles.",
+      "start_timestamp": "00:00:00.000",
+      "end_timestamp": "00:00:00.000",
+      "category": "IMPACT"
+    }
+  ],
+  "performance": {
+    "tokens_used": 269,
+    "processing_time_sec": 1.985064
+  }
+}

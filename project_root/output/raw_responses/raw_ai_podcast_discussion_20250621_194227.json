@@ -1,0 +1,42 @@
+{
+  "metadata": {
+    "title": "AI Podcast Discussion",
+    "timestamp": "20250621_194227",
+    "prompt_length": 903
+  },
+  "prompt": {
+    "model": "gpt-3.5-turbo",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a journalist analyzing transcripts. Extract key highlights in JSON format."
+      },
+      {
+        "role": "user",
+        "content": "Analyze this transcript:\n                Artificial intelligence is transforming industries. In healthcare, AI can analyze medical images faster than humans. \n        Machine learning, a subset of AI, enables systems to learn from data. Deep learning uses neural networks with multiple layers.\n        The future of AI includes more personalized medicine and autonomous vehicles.\n                \n                Return JSON with:\n                - original_text (exact quote)\n                - highlight_text (concise version)\n                - start/end timestamps (format: 00:00:00.000)\n                - category (\"CLAIM\" or \"IMPACT\")\n                "
+      }
+    ],
+    "response_format": {
+      "type": "json_object"
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "Date": "Sat, 21 Jun 2025 14:12:26 GMT",
+      "Content-Type": "application/json",
+      "Transfer-Encoding": "chunked",
+      "Connection": "keep-alive",
+      "Content-Encoding": "gzip",
+      "Access-Control-Allow-Origin": "*",
+      "X-Clerk-Auth-Message": "Invalid JWT form. A JWT consists of three parts separated by dots. (reason=token-invalid, token-carrier=header)",
+      "X-Clerk-Auth-Reason": "token-invalid",
+      "X-Clerk-Auth-Status": "signed-out",
+      "Vary": "Accept-Encoding",
+      "Server": "cloudflare",
+      "Cf-Ray": "953419c46cba3e27-BOM"
+    },
+    "content": "\n         \n\n         \n{\"id\":\"gen-1750515145-ARdPsEjemkRVtvfsSNtA\",\"provider\":\"OpenAI\",\"model\":\"openai/gpt-3.5-turbo\",\"object\":\"chat.completion\",\"created\":1750515145,\"choices\":[{\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\",\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"{\\n    \\\"original_text\\\": \\\"Artificial intelligence is transforming industries. In healthcare, AI can analyze medical images faster than humans. Machine learning, a subset of AI, enables systems to learn from data. Deep learning uses neural networks with multiple layers. The future of AI includes more personalized medicine and autonomous vehicles.\\\",\\n    \\\"highlight_text\\\": \\\"AI transforming industries. In healthcare, AI analyzes medical images faster than humans. Future includes more personalized medicine and autonomous vehicles.\\\",\\n    \\\"start_timestamp\\\": \\\"00:00:00.000\\\",\\n    \\\"end_timestamp\\\": \\\"00:00:00.000\\\",\\n    \\\"category\\\": \\\"IMPACT\\\"\\n}\",\"refusal\":null,\"reasoning\":null}}],\"system_fingerprint\":null,\"usage\":{\"prompt_tokens\":140,\"completion_tokens\":129,\"total_tokens\":269,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}",
+    "elapsed": 1.985064
+  }
+}

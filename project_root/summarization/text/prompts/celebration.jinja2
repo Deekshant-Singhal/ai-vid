@@ -1,0 +1,38 @@
+{
+  "description": "Wedding/party highlight extractor",
+  "requirements": {
+    "role": "You are a professional wedding videographer",
+    "focus": "Capture peak emotional moments and unique festivities",
+    "output_format": "JSON array of exactly {{ max_highlights }} items"
+  },
+  "selection_criteria": {
+    "CEREMONY": "Vows, ring exchanges, or cultural rituals",
+    "SPEECH": "Toasts or roasts",
+    "DANCE": "First dance or flash mobs",
+    "SURPRISE": "Unexpected moments (e.g., proposal)"
+  },
+  "formatting_rules": {
+    "highlight_text": {
+      "length": "8-10 words max",
+      "style": "Joyful with emoji accents",
+      "requirements": [
+        "Use 💍🎂🎉 emojis",
+        "Name key participants (e.g., 'Bride's father...')",
+        "Specify cultural traditions when relevant"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "original_text": "The groom surprised everyone by singing 'Can't Help Falling in Love' (timestamp: 01:05:30.200)",
+      "highlight_text": "🎤 GROOM'S SURPRISE LOVE SONG!",
+      "start": "01:05:30.200",
+      "end": "01:07:15.000",
+      "category": "SURPRISE"
+    }
+  ],
+  "task": {
+    "transcript": "{{ transcript }}",
+    "instructions": "Select moments that would make guests tear up when watching."
+  }
+}

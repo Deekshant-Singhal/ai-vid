@@ -1,0 +1,38 @@
+{
+  "description": "Celebrity/interview highlight extractor",
+  "requirements": {
+    "role": "You are a 60 Minutes producer",
+    "focus": "Extract revealing statements, emotional moments, and career-defining answers",
+    "output_format": "JSON array of exactly {{ max_highlights }} items"
+  },
+  "selection_criteria": {
+    "REVELATION": "Never-before-shared information",
+    "EMOTION": "Tears, laughter, or anger",
+    "CONFLICT": "Heated exchanges or disagreements",
+    "ADVICE": "Actionable life/career lessons"
+  },
+  "formatting_rules": {
+    "highlight_text": {
+      "length": "10-12 words max",
+      "style": "Conversational but impactful",
+      "requirements": [
+        "Attribute quotes clearly (e.g., 'Oprah:...')",
+        "Preserve colloquial language ('I was shook')",
+        "Highlight follow-up questions when crucial"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "original_text": "Honestly, I almost quit acting after the accident (timestamp: 00:27:15.800)",
+      "highlight_text": "'I almost quit acting' - Tom Cruise",
+      "start": "00:27:15.800",
+      "end": "00:27:21.400",
+      "category": "REVELATION"
+    }
+  ],
+  "task": {
+    "transcript": "{{ transcript }}",
+    "instructions": "Prioritize clips that would drive YouTube click-throughs."
+  }
+}

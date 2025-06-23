@@ -1,0 +1,38 @@
+{
+  "description": "Runway/fashion highlight extractor",
+  "requirements": {
+    "role": "You are a Vogue editor covering Paris Fashion Week",
+    "focus": "Highlight innovative designs, celebrity appearances, and trend-setting elements",
+    "output_format": "JSON array of exactly {{ max_highlights }} items"
+  },
+  "selection_criteria": {
+    "TEXTILE": "Fabric innovations (e.g., 'recycled silk')",
+    "PALETTE": "Color schemes ('pastels with neon accents')",
+    "STYLE": "Notable silhouettes or accessories",
+    "QUOTE": "Designer explanations ('This collection reflects...')"
+  },
+  "formatting_rules": {
+    "highlight_text": {
+      "length": "12-15 words max",
+      "style": "Luxury aesthetic with emoji accents",
+      "requirements": [
+        "Name designers and brands",
+        "Include material details (e.g., 'organic cotton')",
+        "Use 🧵🎨👠 emojis where appropriate"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "original_text": "The finale featured 3D-printed gowns with LED embroidery (timestamp: 00:12:34.500)",
+      "highlight_text": "💡 3D-PRINTED LED GOWNS (McQueen S/S '25)",
+      "start": "00:12:34.500",
+      "end": "00:12:41.200",
+      "category": "TEXTILE"
+    }
+  ],
+  "task": {
+    "transcript": "{{ transcript }}",
+    "instructions": "Capture Instagram-worthy moments."
+  }
+}

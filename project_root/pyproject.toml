@@ -1,0 +1,4 @@
+[project]
+name = 'video_transcriber'
+version = '0.1.0'
+description = 'Video to Text Transcription App'
