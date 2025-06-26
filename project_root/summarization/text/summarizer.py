@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import asyncio
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,10 +23,14 @@ logger = logging.getLogger(__name__)
 class Highlight:
     original_text: str
     highlight_text: str
-    start: List[float]  # support merged segments
+    start: List[float]
     end: List[float]
     category: str
-    confidence: Optional[float] = None
+    confidence: float = 0.0
+    reasoning: Optional[str] = None
+    audio_confidence: Optional[float] = None
+    combined_confidence: Optional[float] = None
+    audio_metadata: Optional[Dict] = None
 
 @dataclass
 class SummaryResult:
@@ -49,14 +54,61 @@ class PromptManager:
         self,
         style: str,
         transcript: str,
+        transcript_segments: List[Dict],  # Required parameter
         max_highlights: int,
+        aligned_segments: Optional[List[Dict]] = None,
         **kwargs
     ) -> str:
-        template = self.env.get_template(f"{style}.jinja2")
-        return template.render(
-            transcript=transcript,
+        """Render prompt with timestamped transcript"""
+        # Format timestamped transcript
+        timestamped_transcript = "\n\n".join(
+            f"[{seg['start']:.2f}s-{seg['end']:.2f}s]\n{seg['text']}"
+            for seg in transcript_segments
+        )    
+        # Format audio segments
+        audio_context = []
+        if aligned_segments:
+            for seg in aligned_segments:
+                if isinstance(seg, dict):
+                    audio_context.append({
+                        'start': seg.get('start', 0),
+                        'end': seg.get('end', 0),
+                        'emotion': seg.get('emotion', 'neutral'),
+                        'energy': seg.get('energy', 0),
+                        'confidence': seg.get('confidence', 0),
+                        'pitch': seg.get('pitch', 0)
+                    })
+                elif hasattr(seg, '__dict__'):
+                    audio_context.append({
+                        'start': seg.start,
+                        'end': seg.end,
+                        'emotion': seg.emotion,
+                        'energy': seg.energy,
+                        'confidence': seg.confidence,
+                        'pitch': seg.pitch
+                    })
+
+        if not transcript.strip():
+           raise ValueError("Empty transcript provided")
+
+        prompt = self.env.get_template(f"{style}.jinja2").render(
+            full_transcript=transcript,
+            timestamped_transcript=timestamped_transcript,
             max_highlights=max_highlights,
+            audio_segments=audio_context,
             **kwargs
+        )
+        
+        logger.debug(f"Prompt contains:\n"
+                    f"- {len(timestamped_transcript.splitlines())} transcript lines\n"
+                    f"- {len(audio_context)} audio segments")
+        return prompt
+
+    def _format_timestamped_transcript(self, segments: List[Dict]) -> str:
+        """Convert segments to timestamped text blocks"""
+        return "\n\n".join(
+            f"[{seg['start']:.2f}s - {seg['end']:.2f}s]\n{seg['text']}"
+            for seg in segments
         )
 
 # ------------------ Core Summarizer ------------------
@@ -65,172 +117,155 @@ class Summarizer:
     def __init__(self, prompt_dir: Optional[str] = None):
         self.prompts = PromptManager(prompt_dir or str(Path(__file__).parent / "prompts"))
 
-    def summarize(
+    async def summarize(
         self,
         transcript: str,
+        transcript_segments: List[Dict],
         style: Union[Style, str] = Style.DEFAULT,
         max_highlights: int = 5,
+        aligned_segments: Optional[List[Dict]] = None,
         **kwargs
     ) -> SummaryResult:
+        """Generate summary with timestamped context"""
         try:
             if isinstance(style, str):
                 style = Style.from_string(style)
 
+            logger.info(
+                f"Starting summarization with:\n"
+                f"- {len(transcript_segments)} transcript segments\n"
+                f"- {len(aligned_segments or [])} audio segments"
+            )
+
             prompt = self.prompts.render(
                 style=style.value,
                 transcript=transcript,
+                transcript_segments=transcript_segments,
                 max_highlights=max_highlights,
+                aligned_segments=aligned_segments,
                 **kwargs
             )
 
-            request = LLMRequest(
-                prompt=prompt,
-                system_prompt=f"You are a professional {style.value} content summarizer",
-                json_mode=True,
-                temperature=self._get_temperature_for_style(style),
-                max_tokens=self._get_max_tokens_for_style(style)
-            )
+            # Debug output
+            debug_path = Path("llm_prompt_debug.txt")
+            debug_path.write_text(prompt)
+            logger.debug(f"Full prompt saved to: {debug_path}")
 
-            response = route_with_fallback(style, request)
+            response = await self._safe_llm_call(style, prompt)
             return self._parse_response(response)
-
-        except LLMError as e:
-            logger.error(f"LLM summarization failed: {str(e)}")
-            raise
+            
         except Exception as e:
-            logger.error(f"Unexpected error during summarization: {str(e)}", exc_info=True)
+            logger.error(f"Summarization failed: {str(e)}", exc_info=True)
             raise RuntimeError(f"Summarization failed: {str(e)}") from e
 
-    def _parse_response(self, response: LLMResponse) -> SummaryResult:
-        def safe_json_loads(data: str):
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError as e:
-                logger.debug(f"JSON parse failed for: {data[:200]}...")
-                raise
-
-        cleaned_text = response.text.strip()
-        cleaned_text = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', cleaned_text)
-
-        parsing_attempts = [
-            lambda: safe_json_loads(cleaned_text),
-            lambda: safe_json_loads(re.search(r'```(?:json)?\n?(.*?)```', cleaned_text, re.DOTALL).group(1).strip()),
-            lambda: safe_json_loads(re.search(r'(\[.*\]|\{.*\})', cleaned_text, re.DOTALL).group(0))
-        ]
-
-        parsed_data = None
-        last_error = None
-
-        for attempt in parsing_attempts:
-            try:
-                parsed_data = attempt()
-                break
-            except (json.JSONDecodeError, AttributeError) as e:
-                last_error = e
-                continue
-
-        if not parsed_data:
-            raise ValueError(f"Failed to parse LLM response. Last error: {str(last_error)}\nResponse content: {cleaned_text[:500]}...")
-
-        logger.warning(f"\U0001F50D Cleaned LLM Response:\n{cleaned_text[:1000]}")
-
-        if isinstance(parsed_data, dict):
-            highlights_data = parsed_data.get('highlights', [])
-            overview = parsed_data.get('overview')
-            keywords = parsed_data.get('keywords', [])
-        elif isinstance(parsed_data, list):
-            highlights_data = parsed_data
-            overview = None
-            keywords = []
-        else:
-            raise ValueError(f"Unexpected response format: {type(parsed_data)}")
-
-        highlights = []
-        for idx, h in enumerate(highlights_data):
-            try:
-                if not isinstance(h, dict):
-                    logger.warning(f"Highlight {idx} is not a dict: {type(h)}")
-                    continue
-
-                required_fields = {'original_text', 'highlight_text', 'start', 'end'}
-                if not required_fields.issubset(h.keys()):
-                    missing = required_fields - set(h.keys())
-                    logger.warning(f"Highlight {idx} missing fields: {missing}")
-                    continue
-
-                start_raw = h['start']
-                end_raw = h['end']
-
-                start_list = (
-                    [self._normalize_timestamp(ts) for ts in start_raw]
-                    if isinstance(start_raw, list)
-                    else [self._normalize_timestamp(start_raw)]
-                )
-
-                end_list = (
-                    [self._normalize_timestamp(ts) for ts in end_raw]
-                    if isinstance(end_raw, list)
-                    else [self._normalize_timestamp(end_raw)]
-                )
-
-                highlights.append(Highlight(
-                    original_text=str(h['original_text']).strip(),
-                    highlight_text=str(h['highlight_text']).strip(),
-                    start=start_list,
-                    end=end_list,
-                    category=str(h.get('category', 'FACT')).upper(),
-                    confidence=float(h.get('confidence', 0.0)) if 'confidence' in h else None
-                ))
-            except Exception as e:
-                logger.warning(f"Skipping invalid highlight {idx}: {str(e)}")
-                continue
-
-        if not highlights:
-            raise ValueError("No valid highlights could be extracted from response")
-
-        return SummaryResult(
-            highlights=highlights,
-            overview=overview,
-            keywords=keywords,
-            model_metadata={
-                'model': response.model,
-                'provider': response.provider.value,
-                'tokens': response.tokens_used,
-                'cost': response.cost,
-                'raw_response': cleaned_text[:1000]
-            }
+    async def _safe_llm_call(self, style: Style, prompt: str) -> LLMResponse:
+        """Handle both sync and async LLM providers"""
+        llm_request = LLMRequest(
+            prompt=prompt,
+            system_prompt=f"You are a professional {style.value} content summarizer. "
+                          "Use the provided timestamps when creating highlights.",
+            json_mode=True,
+            temperature=self._get_temperature_for_style(style),
+            max_tokens=self._get_max_tokens_for_style(style)
         )
+        
+        if asyncio.iscoroutinefunction(route_with_fallback):
+            return await route_with_fallback(style, llm_request)
+        
+        result = route_with_fallback(style, llm_request)
+        if isinstance(result, LLMResponse):
+            return result
+        if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+            return await result
+        
+        raise RuntimeError("Unexpected response type from LLM router")
 
-    def _normalize_timestamp(self, timestamp: Union[str, float]) -> float:
+    def _parse_response(self, response: LLMResponse) -> SummaryResult:
+        """Parse LLM response with timestamp validation"""
+        try:
+            data = json.loads(self._clean_response_text(response.text))
+            
+            highlights = []
+            for h in data.get('highlights', []):
+                try:
+                    if not all(k in h for k in ['original_text', 'highlight_text', 'start', 'end']):
+                        continue
+                        
+                    highlights.append(Highlight(
+                        original_text=h['original_text'].strip(),
+                        highlight_text=h['highlight_text'].strip(),
+                        start=self._convert_timestamps(h['start']),
+                        end=self._convert_timestamps(h['end']),
+                        category=h.get('category', 'FACT').upper(),
+                        confidence=float(h.get('confidence', 0)),
+                        reasoning=h.get('reasoning'),
+                        audio_confidence=float(h.get('audio_confidence', 0)),
+                        combined_confidence=float(h.get('combined_confidence', 0)),
+                        audio_metadata=h.get('audio_metadata')
+                    ))
+                except Exception as e:
+                    logger.warning(f"Skipping invalid highlight: {str(e)}")
+                    continue
+
+            if not highlights:
+                raise ValueError("No valid highlights found in response")
+
+            return SummaryResult(
+                highlights=highlights,
+                overview=data.get('overview'),
+                keywords=data.get('keywords', []),
+                model_metadata={
+                    'model': response.model,
+                    'provider': response.provider.value,
+                    'tokens': response.tokens_used,
+                    'cost': response.cost,
+                    'raw_response': response.text[:1000]
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse LLM response: {str(e)}")
+            raise ValueError(f"Invalid LLM response: {str(e)}") from e
+
+    def _clean_response_text(self, text: str) -> str:
+        """Sanitize LLM response"""
+        return re.sub(r'[\x00-\x1F\x7F-\x9F]', '', text.strip())
+
+    def _convert_timestamps(self, timestamp: Union[str, float, List]) -> List[float]:
+        """Convert timestamps from any format to seconds"""
+        if isinstance(timestamp, list):
+            return [self._timestamp_to_seconds(t) for t in timestamp]
+        return [self._timestamp_to_seconds(timestamp)]
+
+    def _timestamp_to_seconds(self, timestamp: Union[str, float]) -> float:
+        """Convert HH:MM:SS.SSS or MM:SS.SSS or float to seconds"""
         if isinstance(timestamp, (int, float)):
             return float(timestamp)
-
-        try:
-            if isinstance(timestamp, str) and ':' in timestamp:
-                parts = timestamp.split(':')
-                if len(parts) == 3:
+            
+        if isinstance(timestamp, str):
+            parts = timestamp.replace(',', '.').split(':')
+            try:
+                if len(parts) == 3:  # HH:MM:SS
                     return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-                elif len(parts) == 2:
+                elif len(parts) == 2:  # MM:SS
                     return float(parts[0]) * 60 + float(parts[1])
-            return float(timestamp)
-        except ValueError:
-            logger.warning(f"Invalid timestamp format: {timestamp}")
-            return 0.0
+                return float(timestamp)  # Plain seconds
+            except ValueError:
+                logger.warning(f"Invalid timestamp format: {timestamp}")
+                return 0.0
+        return 0.0
 
     def _get_temperature_for_style(self, style: Style) -> float:
-        temps = {
+        return {
             Style.JOURNALISM: 0.3,
             Style.LECTURE: 0.4,
             Style.DEFAULT: 0.7,
             Style.CELEBRATION: 1.0
-        }
-        return temps.get(style, 0.7)
+        }.get(style, 0.7)
 
     def _get_max_tokens_for_style(self, style: Style) -> int:
-        tokens = {
+        return {
             Style.JOURNALISM: 2048,
             Style.LECTURE: 3072,
             Style.DEFAULT: 1024,
             Style.SPORTS: 512
-        }
-        return tokens.get(style, 1024)
+        }.get(style, 1024)

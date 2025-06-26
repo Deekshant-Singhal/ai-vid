@@ -14,6 +14,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class PromptCaptureSummarizer:
+    """Wrapper to capture prompts sent to the LLM"""
+    def __init__(self, original_summarizer):
+        self.original = original_summarizer
+        self.last_prompt = None
+        self.last_system_prompt = None
+    
+    async def summarize(self, *args, **kwargs):
+        """Capture prompt before sending to actual summarizer"""
+        self.last_prompt = kwargs.get('transcript', args[0] if args else None)
+        self.last_system_prompt = kwargs.get('system_prompt', "No system prompt captured")
+        
+        # Save the prompt immediately
+        prompt_data = {
+            "timestamp": datetime.now().isoformat(),
+            "prompt": self.last_prompt,
+            "system_prompt": self.last_system_prompt,
+            "style": kwargs.get('style', 'default'),
+            "max_highlights": kwargs.get('max_highlights', 5),
+            "has_audio_data": bool(kwargs.get('aligned_segments'))
+        }
+        
+        prompt_file = Path("data/outputs/llm_prompts.json")
+        prompt_file.parent.mkdir(exist_ok=True)
+        with open(prompt_file, 'w') as f:
+            json.dump(prompt_data, f, indent=2)
+        
+        logger.info(f"Saved LLM prompt to {prompt_file}")
+        
+        # Call original summarizer
+        return await self.original.summarize(*args, **kwargs)
+
 async def test_video_summary_pipeline():
     """End-to-end test of VideoSummaryPipeline with sample video"""
     print("\n" + "="*50)
@@ -22,6 +54,9 @@ async def test_video_summary_pipeline():
     
     # Initialize pipeline with audio analysis enabled
     pipeline = VideoSummaryPipeline(enable_audio_fusion=True)
+    
+    # Wrap the summarizer to capture prompts
+    pipeline.summarizer = PromptCaptureSummarizer(pipeline.summarizer)
     
     # Test file paths
     test_video = Path("data/inputs/sample_video.mp4")

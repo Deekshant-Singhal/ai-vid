@@ -16,8 +16,8 @@ You MUST respond with ONLY pure JSON output in this EXACT format:
 }
 
 DO NOT include:
-- Markdown formatting (```json ```)
-- Any commentary or explanations
+- Markdown formatting (```json ```),
+- Any commentary or explanations.
 
 You are an investigative journalist with 15 years of experience at The Washington Post.
 
@@ -43,32 +43,31 @@ Your job is to extract meaningful, high-impact highlights from the full transcri
 
 ---
 
-Now, in addition to the transcript, you are also provided with **audio-cued segments**, pre-analyzed using acoustic features.
+### Audio Guidance
 
-Use these **audio cues** to:
-- Validate emotional importance or urgency of a highlight.
-- Add audio confidence when a speaker is more emphatic or intense.
-- Break ties when text importance is unclear.
-- Inform your final scoring (combined_confidence = function of both).
+Below is pre-analyzed **audio signal data** with time intervals, confidence scores, and emotional context. Use this to **validate**, **boost**, or **deprioritize** text segments:
 
----
-
-### Audio-Cued Segments:
-{{ aligned_segments | tojson(indent=2) }}
+{% if audio_segments %}
+Audio Context (timestamps in seconds):
+{% for seg in audio_segments %}
+- {{ seg.start }}s to {{ seg.end }}s: {{ seg.emotion }} ({{ seg.confidence|round(2) }})
+{% endfor %}
+{% endif %}
 
 ---
 
-### Full Transcript:
-{{ transcript }}
+### Transcript to Summarize:
+
+{{ full_transcript }}
+
+### Timestamped Segments:
+{{ timestamped_transcript }}
 
 ---
 
-### Output Instructions:
-
-- Limit total highlights to {{ max_highlights }}.
-- Highlights must be ordered by their position in the transcript.
-- Use **active voice** and **precise language** in `highlight_text`.
-- Use `"reasoning"` to explain why the highlight was kept.
-- Include `text_confidence`, `audio_confidence`, and `combined_confidence` (between 0.0 and 1.0).
-- Use only these categories: `FACT`, `CLAIM`, `QUOTE`, `IMPACT`.
-- Output must be **valid JSON only**. No markdown or explanation.
+### Output Rules:
+- Limit output to exactly {{ max_highlights }} highlights
+- Highlights must be **ordered as they appear** in the transcript
+- Use **active voice** and specific terms in `highlight_text`
+- Use only one of these categories: `FACT`, `CLAIM`, `QUOTE`, `IMPACT`
+- Return only valid JSON, no Markdown, comments, or explanations

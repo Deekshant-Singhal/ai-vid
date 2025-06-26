@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import whisper  # type: ignore
 from config.settings import WHISPER_MODEL
-from transcribe.utils.paths import get_output_paths, validate_output_paths
+from paths import get_output_paths, validate_output_paths
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class VideoTranscriber:
         """
         Main pipeline: extract audio, transcribe, save results
         """
-        component_dir, txt_path, json_path = get_output_paths(video_path)
+        component_dir, txt_path, json_path, audio_json_path = get_output_paths(video_path)
         audio_path = component_dir / f"{video_path.stem}.wav"
 
         # 1. Validate paths before processing
