@@ -15,7 +15,7 @@ async def main():
     
     # Initialize pipeline
     pipeline = VideoSummaryPipeline()
-    sample_video = Path("data/inputs/sample_video.mp4")
+    sample_video = Path("data/inputs/sample3.mp4")
 
     if not sample_video.exists():
         print(f"❌ Error: Sample video not found at {sample_video}")
@@ -83,7 +83,7 @@ async def main():
             style="journalism",
             transcript=transcription.text,
             transcript_segments=transcription.segments,  # Critical addition
-            max_highlights=3,
+            max_highlights=5,
             aligned_segments=list(audio_analysis.values())
         )
         
@@ -104,7 +104,7 @@ async def main():
         result = await pipeline.process_video(
             video_path=sample_video,
             style="journalism",
-            max_highlights=3,
+            max_highlights=5,
             overwrite=True
         )
 

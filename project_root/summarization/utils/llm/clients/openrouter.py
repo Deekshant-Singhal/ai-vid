@@ -75,8 +75,11 @@ def call_openrouter(
                 json=payload,
                 timeout=TIMEOUT
             )
+            print(f"Status: {response.status_code}, Response: {response.text}")  # Check for HTML/errors
+
             response.raise_for_status()
             data = response.json()
+
 
             if "error" in data:
                 raise LLMAPIError(data["error"].get("message", "OpenRouter error"))

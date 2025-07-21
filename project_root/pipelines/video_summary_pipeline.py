@@ -5,16 +5,20 @@ import json
 import logging
 from datetime import datetime
 import numpy as np
-
+from sentence_transformers import SentenceTransformer
+from bert_score import score as bert_score
+import transformers
+transformers.logging.set_verbosity_error()
 from transcribe.video_transcriber import VideoTranscriber, TranscriptionResult
 from summarization.text.summarizer import Summarizer, SummaryResult
 from paths import get_output_paths, validate_output_paths
 from summarization.audio.audio_analyzer import AudioAnalyzer
+from summarization.utils.llm.router import Style
 
 logger = logging.getLogger(__name__)
 
 class VideoSummaryPipeline:
-    """End-to-end pipeline for video summarization with audio-text fusion"""
+    """Enhanced video summarization pipeline with audio-text fusion and quality metrics"""
     
     def __init__(
         self,
@@ -25,10 +29,11 @@ class VideoSummaryPipeline:
         enable_audio_fusion: bool = True,
         audio_weight: float = 0.3,
         strict_audio: bool = False,
-        max_retries: int = 3
+        max_retries: int = 3,
+        bert_model: str = 'all-mpnet-base-v2'
     ):
         """
-        Initialize pipeline components
+        Initialize pipeline components with enhanced capabilities
         
         Args:
             transcriber: Video transcription component
@@ -38,6 +43,7 @@ class VideoSummaryPipeline:
             audio_weight: Influence of audio (0-1) in final highlights
             strict_audio: Whether to fail on audio processing errors
             max_retries: Maximum retries for transient failures
+            bert_model: SentenceTransformer model for semantic analysis
         """
         self.transcriber = transcriber or VideoTranscriber()
         self.summarizer = summarizer or Summarizer()
@@ -47,6 +53,16 @@ class VideoSummaryPipeline:
         self.text_weight = 1 - self.audio_weight
         self.strict_audio = strict_audio
         self.max_retries = max_retries
+        self.sbert_model = SentenceTransformer(bert_model)
+        
+        # Emotion impact factors
+        self.EMOTION_WEIGHTS = {
+            'excited': 1.3,
+            'angry': 1.2, 
+            'happy': 1.1,
+            'calm': 1.0,
+            'sad': 0.9
+        }
 
     async def process_video(
         self,
@@ -56,12 +72,12 @@ class VideoSummaryPipeline:
         overwrite: bool = False,
         **transcribe_kwargs
     ) -> Dict[str, Any]:
+        """Enhanced video processing pipeline with quality tracking"""
         try:
             # Setup paths and validate
             component_dir, txt_path, json_path, audio_json_path = get_output_paths(video_path)
             summary_path = component_dir / f"{video_path.stem}_summary.json"
             
-            # Ensure paths are absolute
             component_dir = component_dir.resolve()
             validate_output_paths(txt_path, json_path, overwrite)
             
@@ -92,25 +108,27 @@ class VideoSummaryPipeline:
                         raise PipelineError("Audio processing failed") from e
                     logger.warning(f"Audio analysis failed, proceeding without it: {str(e)}")
 
-            # Step 3: Summarize transcript
+            # Step 3: Summarize with two-pass approach
             summary = await self._summarize_transcript(
-                transcription,  # Pass the full transcription object
+                transcription,
                 style,
                 max_highlights,
                 audio_analysis
             )
 
-            # Step 4: Fuse audio features if available
+            # Step 4: Enhanced audio-text fusion
             if audio_analysis:
                 summary = self._fuse_audio_features(summary, audio_analysis)
+                summary = self._apply_temporal_analysis(summary, audio_analysis)
 
-            # Save and return results
+            # Final output formatting
             result = self._format_output(
                 transcription,
                 summary,
                 str(component_dir),
                 style=style
             )
+            
             await self._atomic_write(summary_path, result)
             return result
             
@@ -124,17 +142,7 @@ class VideoSummaryPipeline:
         segments: List[Dict],
         component_dir: Path
     ) -> Dict[Tuple[float, float], Dict[str, Any]]:
-        """
-        Analyze audio and return features keyed by (start,end) tuples
-        
-        Args:
-            audio_path: Path to audio file
-            segments: Transcript segments to analyze
-            component_dir: Directory to save analysis results
-            
-        Returns:
-            Dictionary of {(start,end): audio_features}
-        """
+        """Enhanced audio analysis with temporal patterns"""
         try:
             if not audio_path.exists():
                 raise FileNotFoundError(f"Audio file missing: {audio_path}")
@@ -153,7 +161,7 @@ class VideoSummaryPipeline:
             )
             logger.debug(f"Audio analysis saved to: {analysis_path}")
             
-            # Create lookup dictionary
+            # Create enhanced lookup dictionary with temporal features
             return {
                 (round(s.start, 2), round(s.end, 2)): {
                     'confidence': s.confidence,
@@ -161,7 +169,8 @@ class VideoSummaryPipeline:
                     'speech_prob': s.speech_prob,
                     'label': s.label,
                     'energy': s.energy,
-                    'pitch': s.pitch
+                    'pitch': s.pitch,
+                    'zcr': getattr(s, 'zcr', 0)  # Zero-crossing rate if available
                 }
                 for s in audio_segments
             }
@@ -174,99 +183,158 @@ class VideoSummaryPipeline:
         summary: SummaryResult, 
         audio_analysis: Dict[Tuple[float, float], Dict[str, Any]]
     ) -> SummaryResult:
-        """
-        Combine text and audio features to enhance highlights
-        
-        Args:
-            summary: Text summary result
-            audio_analysis: Audio features dictionary
-            
-        Returns:
-            Enhanced SummaryResult with combined confidence scores
-        """
+        """Enhanced audio-text fusion with emotion weighting"""
+        if not audio_analysis:
+            logger.warning("No audio analysis data available - skipping fusion")
+            return summary
+
         for highlight in summary.highlights:
-            # Handle both single and multi-segment highlights
-            if isinstance(highlight.start, list):
-                # Multi-segment highlight - weighted average
-                audio_features = []
-                for s, e in zip(highlight.start, highlight.end):
-                    key = (round(s, 2), round(e, 2))
-                    if key in audio_analysis:
-                        audio_features.append(audio_analysis[key])
-                
-                if audio_features:
-                    weights = [f['confidence'] for f in audio_features]
-                    total_weight = sum(weights) or 1.0  # Avoid division by zero
+            # Initialize default audio metadata if missing
+            if not hasattr(highlight, 'audio_metadata'):
+                highlight.audio_metadata = {
+                    'emotion': 'calm',
+                    'energy': 0,
+                    'pitch': 0,
+                    'zcr': 0
+                }
+                highlight.audio_confidence = 0
+
+            try:
+                # Multi-segment highlight handling
+                if isinstance(highlight.start, list):
+                    audio_features = []
+                    for s, e in zip(highlight.start, highlight.end):
+                        key = (round(float(s), 2), round(float(e), 2))
+                        if key in audio_analysis:
+                            audio_features.append(audio_analysis[key])
                     
-                    highlight.audio_confidence = sum(
-                        f['confidence'] * w for f, w in zip(audio_features, weights)
-                    ) / total_weight
-                    
-                    highlight.audio_metadata = {
-                        'emotion': max(
-                            set(f['emotion'] for f in audio_features),
-                            key=lambda x: sum(
-                                f['confidence'] for f in audio_features 
-                                if f['emotion'] == x
-                            )
-                        ),
-                        'avg_energy': sum(
-                            f['energy'] * w for f, w in zip(audio_features, weights)
-                        ) / total_weight,
-                        'avg_pitch': sum(
-                            f['pitch'] * w for f, w in zip(audio_features, weights)
+                    if audio_features:
+                        weights = [float(f.get('confidence', 0)) for f in audio_features]
+                        total_weight = sum(weights) or 1.0
+                        
+                        highlight.audio_confidence = sum(
+                            float(f.get('confidence', 0)) * w 
+                            for f, w in zip(audio_features, weights)
                         ) / total_weight
-                    }
-            else:
+                        
+                        highlight.audio_metadata = {
+                            'emotion': max(
+                                set(f.get('emotion', 'calm') for f in audio_features),
+                                key=lambda x: sum(
+                                    f.get('confidence', 0) 
+                                    for f in audio_features 
+                                    if f.get('emotion', None) == x
+                                )
+                            ),
+                            'avg_energy': sum(
+                                float(f.get('energy', 0)) * w 
+                                for f, w in zip(audio_features, weights)
+                            ) / total_weight,
+                            'avg_pitch': sum(
+                                float(f.get('pitch', 0)) * w 
+                                for f, w in zip(audio_features, weights)
+                            ) / total_weight,
+                            'avg_zcr': sum(
+                                float(f.get('zcr', 0)) * w 
+                                for f, w in zip(audio_features, weights)
+                            ) / total_weight
+                        }
+
                 # Single segment highlight
-                key = (round(highlight.start[0], 2), round(highlight.end[0], 2))
-                if key in audio_analysis:
-                    audio_data = audio_analysis[key]
-                    highlight.audio_confidence = audio_data['confidence']
-                    highlight.audio_metadata = {
-                        'emotion': audio_data['emotion'],
-                        'energy': audio_data['energy'],
-                        'pitch': audio_data['pitch']
-                    }
-            
-            # Calculate combined confidence
-            if hasattr(highlight, 'audio_confidence'):
-                highlight.combined_confidence = (
-                    self.text_weight * highlight.confidence + 
-                    self.audio_weight * highlight.audio_confidence
+                else:
+                    key = (round(float(highlight.start[0]), 2), 
+                          round(float(highlight.end[0]), 2))
+                    if key in audio_analysis:
+                        audio_data = audio_analysis[key]
+                        highlight.audio_confidence = float(audio_data.get('confidence', 0))
+                        highlight.audio_metadata = {
+                            'emotion': audio_data.get('emotion', 'calm'),
+                            'energy': float(audio_data.get('energy', 0)),
+                            'pitch': float(audio_data.get('pitch', 0)),
+                            'zcr': float(audio_data.get('zcr', 0))
+                        }
+
+                # Safe confidence fusion
+                base_confidence = (
+                    self.text_weight * float(highlight.confidence) + 
+                    self.audio_weight * float(getattr(highlight, 'audio_confidence', 0))
                 )
-            else:
-                highlight.combined_confidence = highlight.confidence
+                
+                emotion = 'calm' if highlight.audio_metadata is None else str(highlight.audio_metadata.get('emotion', 'calm')).lower()
+                highlight.combined_confidence = base_confidence * self.EMOTION_WEIGHTS.get(emotion, 1.0)
+
+            except Exception as e:
+                logger.error(f"Error processing highlight: {str(e)}", exc_info=True)
+                highlight.combined_confidence = highlight.confidence  # Fallback
+
+        # Final sorting
+        summary.highlights.sort(key=lambda x: float(getattr(x, 'combined_confidence', x.confidence)), 
+                              reverse=True)
+        return summary
+
+ 
+    def _apply_temporal_analysis(
+        self, 
+        summary: SummaryResult,
+        audio_analysis: Dict[Tuple[float, float], Dict[str, Any]]
+    ) -> SummaryResult:
+        """Apply temporal pattern analysis to boost important sections"""
+        # Convert to time series
+        times = []
+        pitches = []
+        energies = []
+        for (start, end), features in audio_analysis.items():
+            times.append((start + end) / 2)  # Midpoint
+            pitches.append(features['pitch'])
+            energies.append(features['energy'])
         
-        # Re-sort highlights by combined confidence
-        summary.highlights.sort(key=lambda x: x.combined_confidence, reverse=True)
+        # Calculate z-scores
+        pitch_z = (np.array(pitches) - np.mean(pitches)) / np.std(pitches)
+        energy_z = (np.array(energies) - np.mean(energies)) / np.std(energies)
+        
+        # Boost highlights in high-variation regions
+        for highlight in summary.highlights:
+            if not highlight.audio_metadata:
+                continue
+                
+            # Get midpoint of highlight
+            if isinstance(highlight.start, list):
+                midpoint = (sum(highlight.start) + sum(highlight.end)) / (2 * len(highlight.start))
+            else:
+                midpoint = (highlight.start[0] + highlight.end[0]) / 2
+            
+            # Find nearest analysis point
+            idx = np.argmin(np.abs(np.array(times) - midpoint))
+            
+            # Boost if in high-variation region
+            if abs(pitch_z[idx]) > 1.5 or abs(energy_z[idx]) > 1.5:
+                highlight.combined_confidence *= 1.2
+                highlight.audio_metadata['temporal_boost'] = True
+        
         return summary
 
     async def _summarize_transcript(
         self,
-        transcription: 'TranscriptionResult',  # Ensure type hint
+        transcription: TranscriptionResult,
         style: str,
         max_highlights: int,
         audio_analysis: Optional[Dict] = None
-    ) -> 'SummaryResult':
-        """Wrapper for summarization with error context"""
+    ) -> SummaryResult:
         try:
-            # Verify we have a proper TranscriptionResult
-            if not hasattr(transcription, 'text') or not hasattr(transcription, 'segments'):
-                raise ValueError("Invalid transcription object - missing required attributes")
+            if isinstance(style, str):
+                style = Style.from_string(style)
                 
-            return await self._retry_operation(
-                self.summarizer.summarize,
+            return await self.summarizer.summarize(
                 transcript=transcription.text,
                 transcript_segments=transcription.segments,
                 style=style,
                 max_highlights=max_highlights,
-                aligned_segments=list(audio_analysis.values()) if audio_analysis else None
+                aligned_segments=list(audio_analysis.values()) if audio_analysis else None,
+                two_pass=True
             )
         except Exception as e:
-            logger.error(f"Summarization failed: {str(e)}", exc_info=True)
-            raise PipelineError("Text summarization failed") from e
-
+            logger.error(f"Summarization failed: {str(e)}")
+            raise PipelineError(f"Text summarization failed: {str(e)}") from e
     def _format_output(
         self,
         transcription: TranscriptionResult,
@@ -274,26 +342,16 @@ class VideoSummaryPipeline:
         component_dir: str,
         style: str = "default"
     ) -> Dict[str, Any]:
-        """
-        Format final output with all metadata
-        
-        Args:
-            transcription: Raw transcription results
-            summary: Processed summary results
-            component_dir: Output directory path
-            style: Summary style used
-            
-        Returns:
-            Dictionary containing all pipeline outputs
-        """
+        """Enhanced output formatting with quality metrics"""
         return {
             "metadata": {
-                "pipeline_version": "2.1",
+                "pipeline_version": "2.2",
                 "processing_time": datetime.now().isoformat(),
                 "audio_fusion_enabled": self.enable_audio_fusion,
                 "audio_weight": self.audio_weight,
                 "text_weight": self.text_weight,
-                "style": style
+                "style": style,
+                "quality_metrics": summary.quality_metrics
             },
             "transcription": {
                 "text": transcription.text,
@@ -318,10 +376,13 @@ class VideoSummaryPipeline:
                         "confidence": round(h.combined_confidence, 3),
                         "text_confidence": round(h.confidence, 3),
                         "audio_confidence": round(getattr(h, 'audio_confidence', 0), 3),
-                        "audio_metadata": getattr(h, 'audio_metadata', None)
+                        "audio_metadata": getattr(h, 'audio_metadata', None),
+                        "semantic_similarity": getattr(h, 'semantic_similarity', None),
+                        "bert_score": getattr(h, 'bert_score', None)
                     }
                     for h in summary.highlights
-                ]
+                ],
+                "quality_metrics": summary.quality_metrics
             },
             "paths": {
                 "component_dir": component_dir,
@@ -330,6 +391,8 @@ class VideoSummaryPipeline:
                 "summary": str(Path(component_dir) / f"{Path(transcription.audio_path).stem}_summary.json")
             }
         }
+
+   
 
     def _format_timestamps(self, highlight) -> List[Dict]:
         """Convert timestamp lists to formatted dictionaries"""

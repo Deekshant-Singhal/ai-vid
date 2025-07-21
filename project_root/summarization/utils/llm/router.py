@@ -9,6 +9,7 @@ from enum import Enum, auto
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import partial
+import asyncio
 
 # Import clients and exceptions
 from summarization.utils.llm.clients.openrouter import call_openrouter, OpenRouterParams
@@ -170,12 +171,15 @@ PROVIDER_HANDLERS = {
 
 # ------------------ Router Core ------------------
 
-def route_with_fallback(
+async def route_with_fallback(
     style: Union[Style, str],
     request: LLMRequest,
     retries: int = 3,
     allow_fallback: bool = True
 ) -> LLMResponse:
+    # Convert string style to enum if needed
+    if isinstance(style, str):
+        style = Style.from_string(style)
     """
     Smart LLM routing with:
     - Model fallback
@@ -221,20 +225,19 @@ def route_with_fallback(
             continue
 
         try:
-            handler = PROVIDER_HANDLERS.get(config.provider)
-            if not handler:
-                raise ValueError(f"No handler for provider {config.provider}")
+                handler = PROVIDER_HANDLERS.get(config.provider)
+                if not handler:
+                    raise ValueError(f"No handler for provider {config.provider}")
 
-            response = handler(config, request)
-            response.is_fallback = i > 0  # Mark if this was a fallback attempt
-            
-            logger.info(
-                f"Success with {config.provider}/{config.model} "
-                f"(tokens: {response.tokens_used}, cost: {response.cost or 'N/A'}, "
-                f"latency: {response.latency:.2f}s)"
-            )
-            return response
-
+                # Run sync handler in executor
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None, 
+                    lambda: handler(config, request)
+                )
+                response.is_fallback = i > 0
+                return response        
+        
         except LLMRateLimitError as e:
             breakers[config.provider].record_failure()
             wait_time = e.reset_time or 5
